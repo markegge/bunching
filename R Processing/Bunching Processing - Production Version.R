@@ -1,3 +1,7 @@
+# Bunching Processing.R
+# Author: Mark Egge
+# Last Revised: 5/12/16
+
 # broadly speaking, given an input file with times, latitudes, and longitudes
 # the script below will calcualte if given points are within 250m
 # of each other at a given time
@@ -16,9 +20,15 @@ ptm <- proc.time()
 
 working.file <- "march-16-all-rts.csv"
 
+# define a headway threshold to be used below. Buses less than 250 meters from the
+# next bus on the same line will be coded as "bunched"
+headway.threshold <- 250 
+
 options(scipen=20) # display numbers up to 20 decimal points w/o scientific notation
 
-# read in only first 2000 rows to make this manageable for working on my distance script
+# the import.csv funtion that lurks in the code of every R project written by
+# Artur Dubrawski's Data Mining students. I've commented out the first line which
+# only reads in the first 50k lines (for testing purposes)
 import.csv <- function(filename){
   #return(read.csv(filename, header=FALSE, sep=",", strip.white=TRUE, nrows=50000, fileEncoding = "UTF-8-BOM"))
   return(read.csv(filename, header=FALSE, sep=",", strip.white=TRUE, fileEncoding = "UTF-8-BOM"))
@@ -31,44 +41,45 @@ if(!is.data.frame(df)) { df <- import.csv(working.file) } # import data if not a
 # add headers from another file...
 headers <- read.csv(file="headers.csv", header=TRUE)
 names(df) <- names(headers)
-remove(headers)
+remove(headers) # and cleanup workspace
 
 
 # do my date conversions and column derivation before going to a table. Drop my temporary datetime column 
-# before going to DT because DT is stupid
+# before going to data.table because data.table hates POSIXc
 df$dt <- strptime(df$DateTime, format='%Y-%m-%d %H:%M:%S.000')
 df$Route <- substr(as.character(df$RouteNumber), 0, 2) # convert from 71A to 71, etc.
 df$YMD <- format(df$dt, format='%y%m%d') 
 df$M <- as.numeric(format(df$dt, format='%M'))
 df$HR <- as.numeric(format(df$dt, format='%H'))
-df$MOD <- (df$HR * 60) + df$M
-df$TIMESEG <- floor(df$MOD / 5)
-df$latitude <- df$CurrentLatitude # copy lat long columns for later user
+df$MOD <- (df$HR * 60) + df$M # Minute of Day
+df$TIMESEG <- floor(df$MOD / 5) # define 5 minute time segments
+df$latitude <- df$CurrentLatitude # copy lat long columns for later use
 df$longitude <- df$CurrentLongitude
-
-# clean data
-df <- df[df$HR >= 6, ] # keep only data between 6:00 am and midnight
 
 df <- subset(df, select=-c(dt, M)) # get rid of columns previously used for processing
 
-# convert to spatial data frame class, and reproject into UTM (meters)
-coordinates(df) <- c("CurrentLongitude", "CurrentLatitude")
-proj4string(df) <- CRS("+proj=longlat +datum=WGS84")
-res <- spTransform(df, CRS("+proj=utm +zone=17T ellps=WGS84")) # reproject from latlong into UTM (meters)
+df <- df[df$HR >= 6, ] # keep only data between 6:00 am and midnight
 
-# given a spatial dataframe containing latitudes and longitude pairs, return a vector of the
-# minimum distance from each to its nearest neighbor
+
+
+coordinates(df) <- c("CurrentLongitude", "CurrentLatitude") # convert to spatial data frame class,
+proj4string(df) <- CRS("+proj=longlat +datum=WGS84") # set projection to WGS84
+# Pittsburgh: UTM Zone 17T
+res <- spTransform(df, CRS("+proj=utm +zone=17T ellps=WGS84")) # reproject from WGS84 (decimal degrees) into UTM (meters)
+
+# given a spatial dataframe containing latitudes and longitude pairs, return TRUE
+# for those rows within 250 meters of another row, FALSE otherwise
 is.bunched <- function(subset) {
   coordinates(subset) <- c("CurrentLongitude", "CurrentLatitude")
-  (apply(gWithinDistance(subset, subset, 250, byid=TRUE), 1, sum) > 1)
+  (apply(gWithinDistance(subset, subset, headway.threshold, byid=TRUE), 1, sum) > 1)
 }
 
-dt <- as.data.table(res)
+dt <- as.data.table(res) # convert to data table
 setkeyv(dt, c('YMD', 'MOD', 'Route', 'RouteDirection')) # sort by minute of date, route, and route direction
 dt <- dt[, BUNCHED := is.bunched(.SD), by=.(YMD, MOD, Route, RouteDirection)]
-dt <- dt[, BUNCHED10 := ifelse(BUNCHED, 1, 0)]
-dt <- dt[, DISTSEG := floor(Distance / 1000)]
-dt <- dt[, TIMESEG := floor(df$MOD / 10)] # let's do this by ten minute interval, just to make the vis easier
+dt <- dt[, BUNCHED10 := ifelse(BUNCHED, 1, 0)] # code TRUE/FALSE as 1/0
+dt <- dt[, DISTSEG := floor(Distance / 1000)] # divide distance along path in 1000' increments
+dt <- dt[, TIMESEG := floor(df$MOD / 10)] # change time segments to ten minute intervals, just to make the vis easier
 
 # create a distance segment and calculate departure time
 setkeyv(dt, c('YMD', 'RouteNumber', 'RouteDirection', 'TripUniqueID'))
@@ -92,11 +103,7 @@ for(j in 0:1) { # inbound / outbound
   }
 }
 
-#write.table(depart.average[, .(time, distance, value, route, Outbound, DepartTime)], "departed-time-means-tsv.txt", sep="\t", row.names=FALSE)
-#write.table(depart.average[route=="61C" & outbound=="1",.(time, distance, value, route, outbound, DepartTime)], "bunched-means-61c-depart-time-tsv.txt", sep="\t", row.names=FALSE)
-#write.table(depart.average[route=="61D" & outbound=="OUTBOUND",.(time, distance, value)], "bunched-means-61d-depart-time-tsv.txt", sep="\t", row.names=FALSE)
-
-#  group by departure time segment by observation time segment TIMESEG
+# group by departure time segment by observation time segment TIMESEG
 # reorder to sort by route, direction, DTIMESEG
 setkeyv(dt, c('RouteNumber', 'RouteDirection', 'TIMESEG', 'DISTSEG'))
 obs.average <- dt[, .(bunchmean = round(mean(BUNCHED),3)), by=.(RouteNumber, RouteDirection, TIMESEG, DISTSEG)]
@@ -113,9 +120,6 @@ for(j in 0:1) { # inbound / outbound
   }
 }
 
-#write.table(obs.average[, .(time, distance, value, route, outbound)], "observed-time-means-tsv.txt", sep="\t", row.names=FALSE)
-#write.table(obs.average[route=="61C" & outbound=="OUTBOUND",.(time, distance, value)], "bunched-means-61c-observed-time-tsv.txt", sep="\t", row.names=FALSE)
-#write.table(obs.average[route=="61D" & outbound=="OUTBOUND",.(time, distance, value)], "bunched-means-61d-observed-time-tsv.txt", sep="\t", row.names=FALSE)
 
 # combine the two into a single file
 depart.average$DepartTime <- 1
@@ -157,6 +161,15 @@ ggplot(data = route.means, aes(x=RouteNumber, y=avg, fill=Route)) + geom_bar(sta
 
 
 # junkyard
+
+#write.table(depart.average[, .(time, distance, value, route, Outbound, DepartTime)], "departed-time-means-tsv.txt", sep="\t", row.names=FALSE)
+#write.table(depart.average[route=="61C" & outbound=="1",.(time, distance, value, route, outbound, DepartTime)], "bunched-means-61c-depart-time-tsv.txt", sep="\t", row.names=FALSE)
+#write.table(depart.average[route=="61D" & outbound=="OUTBOUND",.(time, distance, value)], "bunched-means-61d-depart-time-tsv.txt", sep="\t", row.names=FALSE)
+
+#write.table(obs.average[, .(time, distance, value, route, outbound)], "observed-time-means-tsv.txt", sep="\t", row.names=FALSE)
+#write.table(obs.average[route=="61C" & outbound=="OUTBOUND",.(time, distance, value)], "bunched-means-61c-observed-time-tsv.txt", sep="\t", row.names=FALSE)
+#write.table(obs.average[route=="61D" & outbound=="OUTBOUND",.(time, distance, value)], "bunched-means-61d-observed-time-tsv.txt", sep="\t", row.names=FALSE)
+
 
 # fill in missing values for missing minutes with East Busway Swissvale
 #times <- seq(ISOdate(2016,03,01,06,00,00,tz="EST"), ISOdate(2016,03,01,23,59,59,tz="EST"), by="min")
