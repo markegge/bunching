@@ -1,0 +1,2 @@
+DateTime		,TripID		,TripUniqueID, Distance		,VehicleNumber		,RouteNumber		,RouteDirection		,CurrentLatitude		,CurrentLongitude		,Heading		,Speed		,LastStopID		,LastStopName		,NextStopID		,NextStopName
+2016-02-01 00:01:00.000,40668,2016020161C40668,11438,6036      ,61C       ,OUTBOUND            ,40.43787950085060,-79.96191898469000,46,33,26        ,Forbes Ave past Craft Ave,27        ,Forbes Ave at Halket St
